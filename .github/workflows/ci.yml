@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Lint and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: python -m pytest -q
+
+  lab:
+    name: End-to-end on Zabbix 7.0 (outage drill)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Start the lab
+        run: docker compose up -d
+      - name: Install zbxctl and Playwright
+        run: |
+          pip install -e ".[dev,screenshots]"
+          python -m playwright install --with-deps chromium
+      - name: Wait for the Zabbix API
+        run: zbxctl wait --timeout 300
+        env:
+          ZABBIX_URL: http://localhost:8080
+      - name: Apply, collect data, break the website, check the alert
+        run: python -m pytest -m integration -v -s
+        env:
+          ZABBIX_URL: http://localhost:8080
+          SCREENSHOT_DIR: screenshots
+      - name: Status report
+        if: always()
+        run: zbxctl status -f monitoring.yml || true
+        env:
+          ZABBIX_URL: http://localhost:8080
+      - name: Print screenshots (base64, for the README)
+        if: always()
+        run: |
+          for f in screenshots/*.png; do
+            [ -f "$f" ] || continue
+            echo "SHOT-BEGIN $(basename "$f")"
+            base64 -w 0 "$f" | fold -w 4000
+            echo
+            echo "SHOT-END"
+          done
+      - name: Logs
+        if: failure()
+        run: docker compose logs --tail 80
