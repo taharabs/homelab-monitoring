@@ -1,0 +1,28 @@
+# What Zabbix should monitor. Apply with:  zbxctl apply -f monitoring.yml
+# Connection settings come from the environment (ZABBIX_URL, ZABBIX_USER, ZABBIX_PASSWORD).
+
+host_groups:
+  - Homelab/Linux servers
+  - Homelab/Web services
+
+hosts:
+  # A Linux machine with Zabbix agent 2: CPU, memory, disks, network, processes.
+  - host: zabbix-agent
+    name: Linux server (agent 2)
+    groups: [Homelab/Linux servers]
+    templates: [Linux by Zabbix agent]
+    interface: { dns: zabbix-agent, port: 10050 }
+    tags: { env: homelab, role: linux }
+
+  # A website checked from the outside, like a customer would see it.
+  - host: shop-web
+    name: Demo shop website
+    groups: [Homelab/Web services]
+    tags: { env: homelab, role: web }
+    web_checks:
+      - name: Shop home page
+        url: http://shop-web/
+        expect_status: 200
+        expect_text: Demo shop
+        interval: 30s
+        severity: high
