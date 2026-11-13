@@ -1,0 +1,80 @@
+# My live projects, checked from the outside the way a visitor or a recruiter sees them.
+#
+#   zbxctl apply  -f projects.yml
+#   zbxctl status -f projects.yml --wait 300
+#
+# Only the Zabbix server is needed (no agent): it opens each URL, checks the
+# status code and looks for a piece of text that only the right page contains.
+# A check that fails raises a problem in Zabbix with the severity below.
+
+host_groups:
+  - Portfolio/Live projects
+
+hosts:
+  - host: depot-change-monitor
+    name: Depot change monitor (live demo)
+    groups: [Portfolio/Live projects]
+    tags: { project: depot-change-monitor, hosting: vercel, role: api }
+    web_checks:
+      - name: API health
+        url: https://depot-change-monitor.vercel.app/health
+        expect_text: '"status":"ok"'
+        interval: 2m
+        timeout: 30s   # a cold start on Vercel takes a few seconds
+        severity: high
+      # The demo agent reports in on every cycle; "online" proves the whole pipeline runs.
+      - name: Agent online
+        url: https://depot-change-monitor.vercel.app/api/v1/stats
+        expect_text: '"online":true'
+        interval: 2m
+        timeout: 30s
+        severity: high
+      - name: Dashboard
+        url: https://depot-change-monitor.vercel.app/
+        expect_text: Depot change monitor
+        interval: 5m
+        timeout: 30s
+        severity: average
+
+  - host: task-manager
+    name: Task manager (live demo)
+    groups: [Portfolio/Live projects]
+    tags: { project: task-manager, hosting: vercel, role: web }
+    web_checks:
+      - name: Home page
+        url: https://task-manager-snowy-two.vercel.app/
+        expect_text: Notion-Style Task Manager
+        interval: 5m
+        severity: high
+
+  - host: wach-ntayab
+    name: What should we cook today (PWA)
+    groups: [Portfolio/Live projects]
+    tags: { project: wach-ntayab, hosting: github-pages, role: web }
+    web_checks:
+      - name: Home page
+        url: https://taharabs.github.io/wach-ntayab/
+        expect_text: واش نطيبو اليوم
+        interval: 5m
+        severity: high
+      # Without the service worker the app stops working offline.
+      - name: Service worker
+        url: https://taharabs.github.io/wach-ntayab/sw.js
+        interval: 5m
+        severity: average
+
+  - host: portfolio
+    name: Portfolio website
+    groups: [Portfolio/Live projects]
+    tags: { project: site, hosting: vercel, role: web }
+    web_checks:
+      - name: Home page
+        url: https://techbytahar.vercel.app/
+        expect_text: Mohamed Tahar ABABSA
+        interval: 5m
+        severity: high
+      - name: U-Net write-up
+        url: https://techbytahar.vercel.app/UNet.html
+        expect_text: U-Net in FPGA
+        interval: 5m
+        severity: average

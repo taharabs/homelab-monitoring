@@ -44,6 +44,7 @@ class FakeZabbix:
         self.triggers: dict[str, dict] = {}
         self.calls: list[str] = []
         self.logged_out = False
+        self.item_values: dict[tuple[str, str], str] = {}  # (host, key) -> last value
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self._handle)
@@ -250,4 +251,6 @@ class FakeZabbix:
             return []  # like Zabbix: web scenario items are only returned with webitems=true
         if params["host"] == "Zabbix server" and key == "agent.ping":
             return [{"lastvalue": "1", "lastclock": "1763049600"}]
+        if (params["host"], key) in self.item_values:
+            return [{"lastvalue": self.item_values[params["host"], key], "lastclock": "1763049600"}]
         return [{"lastvalue": "0", "lastclock": "0"}]

@@ -1,0 +1,85 @@
+name: Live projects
+
+# Starts the Zabbix lab, applies projects.yml and checks every live project from the outside.
+# Runs when the file changes, every day, and on demand (Actions tab -> Live projects -> Run workflow).
+# A red run means one of the sites is down or shows the wrong page; GitHub emails the owner.
+
+on:
+  push:
+    branches: [main]
+    paths: [projects.yml, src/**, .github/workflows/projects.yml]
+  schedule:
+    - cron: "17 6 * * *"  # every day at 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: live-projects
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Zabbix checks the live projects
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      ZABBIX_URL: http://localhost:8080
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Start Zabbix (server, web interface, database)
+        run: docker compose up -d zabbix-server zabbix-web
+      - name: Install zbxctl and Playwright
+        run: |
+          pip install -e ".[screenshots]"
+          python -m playwright install --with-deps chromium
+      - name: Wait for the Zabbix API
+        run: zbxctl wait --timeout 300
+      # Same checks as projects.yml, but every minute, so the run takes minutes, not an hour.
+      - name: Make every check run each minute (this run only)
+        run: |
+          python - <<'EOF'
+          import yaml
+          data = yaml.safe_load(open("projects.yml", encoding="utf-8"))
+          for host in data["hosts"]:
+              for check in host.get("web_checks", []):
+                  check["interval"] = "1m"
+          yaml.safe_dump(data, open("projects-ci.yml", "w", encoding="utf-8"), allow_unicode=True, sort_keys=False)
+          EOF
+      - name: Apply
+        run: zbxctl apply -f projects-ci.yml
+      - name: Check every project
+        run: zbxctl status -f projects-ci.yml --wait 240 --fail-on average
+      - name: Screenshot of the web checks in Zabbix
+        if: always()
+        run: |
+          python - <<'EOF'
+          import os
+          from playwright.sync_api import sync_playwright
+          url = os.environ["ZABBIX_URL"]
+          os.makedirs("screenshots", exist_ok=True)
+          with sync_playwright() as p:
+              browser = p.chromium.launch()
+              page = browser.new_page(viewport={"width": 1366, "height": 720})
+              page.goto(f"{url}/index.php")
+              page.fill("#name", "Admin")
+              page.fill("#password", "zabbix")
+              page.click("#enter")
+              page.wait_for_load_state("networkidle")
+              page.goto(f"{url}/zabbix.php?action=web.view")
+              page.wait_for_load_state("networkidle")
+              page.screenshot(path="screenshots/live-projects.png")
+              browser.close()
+          EOF
+          echo "SHOT-BEGIN live-projects.png"
+          base64 -w 0 screenshots/live-projects.png | fold -w 4000
+          echo
+          echo "SHOT-END"
+      - name: Zabbix server log
+        if: failure()
+        run: docker compose logs --tail 60 zabbix-server

@@ -1,6 +1,7 @@
 # homelab-monitoring
 
 [![CI](https://github.com/taharabs/homelab-monitoring/actions/workflows/ci.yml/badge.svg)](https://github.com/taharabs/homelab-monitoring/actions/workflows/ci.yml)
+[![Live projects](https://github.com/taharabs/homelab-monitoring/actions/workflows/projects.yml/badge.svg)](https://github.com/taharabs/homelab-monitoring/actions/workflows/projects.yml)
 ![Zabbix 7.0 LTS](https://img.shields.io/badge/Zabbix-7.0%20LTS-d40000)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)
 ![License: MIT](https://img.shields.io/badge/license-MIT-green)
@@ -122,7 +123,29 @@ $ zbxctl apply
 No changes: Zabbix already matches monitoring.yml
 ```
 
-`zbxctl status --fail-on high` exits with code 2 when a problem of that severity or worse is open, so it can gate a deployment script.
+`zbxctl status` lists the hosts, the result of every web check (`ok`, `failing` with Zabbix's error, or `no data yet`) and the open problems. `--wait 300` first waits up to 5 minutes for every check to report. `--fail-on high` exits with code 2 when a problem of that severity or worse is open or a check is not `ok`, so it can gate a deployment script.
+
+## Watching my live projects
+
+[`projects.yml`](projects.yml) points the same lab at the projects I have online, checked from the outside like a visitor would see them:
+
+| Project | What Zabbix checks |
+| --- | --- |
+| [depot-change-monitor](https://depot-change-monitor.vercel.app) | `/health` answers `"status":"ok"`, the demo agent is `"online"` in `/api/v1/stats`, the dashboard loads |
+| [task-manager](https://task-manager-snowy-two.vercel.app) | the app page loads |
+| [wach-ntayab](https://taharabs.github.io/wach-ntayab/) | the app page loads, and its service worker (offline mode) is served |
+| [portfolio](https://techbytahar.vercel.app) | the home page and the U-Net write-up load |
+
+Each check also looks for a piece of text that only the right page contains, so a hosting error page that answers 200 still counts as down.
+
+```bash
+docker compose up -d zabbix-server zabbix-web   # the agent and demo shop are not needed
+zbxctl wait
+zbxctl apply  -f projects.yml
+zbxctl status -f projects.yml --wait 600        # first results within 5 minutes
+```
+
+The [Live projects](.github/workflows/projects.yml) workflow does the same in GitHub Actions every day (each check every minute, so the run takes a few minutes) and fails if any project is down.
 
 ## Tests
 

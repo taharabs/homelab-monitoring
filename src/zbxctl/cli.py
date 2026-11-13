@@ -6,11 +6,12 @@ import argparse
 import datetime as dt
 import os
 import sys
+import time
 
 from . import __version__
 from .apply import apply_config
 from .client import ZabbixAPI
-from .config import SEVERITIES, ConfigError, load_config
+from .config import SEVERITIES, Config, ConfigError, load_config
 
 SEVERITY_NAMES = {v: k for k, v in SEVERITIES.items()} | {0: "not classified"}
 AVAILABILITY = {"0": "unknown", "1": "available", "2": "unavailable"}
@@ -40,9 +41,32 @@ def cmd_apply(args: argparse.Namespace) -> int:
     return 0
 
 
+def web_check_results(api: ZabbixAPI, config: Config) -> list[tuple[str, str, str, str]]:
+    """(host, check, state, detail) for every web check; state is ok, failing or no data yet."""
+    results = []
+    for host in config.hosts:
+        for check in host.web_checks:
+            failed_step = api.item_last_value(host.host, f"web.test.fail[{check.name}]")
+            if failed_step is None:
+                results.append((host.host, check.name, "no data yet", ""))
+            elif failed_step == "0":
+                results.append((host.host, check.name, "ok", ""))
+            else:
+                error = api.item_last_value(host.host, f"web.test.error[{check.name}]") or ""
+                results.append((host.host, check.name, "failing", error))
+    return results
+
+
 def cmd_status(args: argparse.Namespace) -> int:
     config = load_config(args.file)
     with connect() as api:
+        checks = web_check_results(api, config)
+        deadline = time.monotonic() + args.wait
+        while any(state == "no data yet" for *_, state, _ in checks) and time.monotonic() < deadline:
+            waiting = sum(state == "no data yet" for *_, state, _ in checks)
+            print(f"waiting for {waiting} web check(s) to report...", file=sys.stderr)
+            time.sleep(min(10, max(0.0, deadline - time.monotonic())))
+            checks = web_check_results(api, config)
         hosts = api.call(
             "host.get",
             {
@@ -62,6 +86,12 @@ def cmd_status(args: argparse.Namespace) -> int:
     for name in missing:
         print(f"  {name:<24} {'missing':<12} run 'zbxctl apply' first")
 
+    if checks:
+        print("\nWeb checks")
+        for host, name, state, detail in checks:
+            line = f"  {host:<24} {state:<12} {name}"
+            print(line + (f"  ({detail})" if detail else ""))
+
     print(f"\nProblems ({len(problems)})")
     worst = 0
     for problem in problems:
@@ -77,7 +107,12 @@ def cmd_status(args: argparse.Namespace) -> int:
         print("  none")
 
     threshold = SEVERITIES.get(args.fail_on) if args.fail_on else None
-    return 2 if threshold is not None and worst >= threshold else 0
+    if threshold is None:
+        return 0
+    if worst >= threshold:
+        return 2
+    # A check that never reported (or fails before its trigger fired) is not a pass.
+    return 2 if any(state != "ok" for *_, state, _ in checks) else 0
 
 
 def cmd_wait(args: argparse.Namespace) -> int:
@@ -102,7 +137,14 @@ def main(argv: list[str] | None = None) -> int:
     status_p.add_argument(
         "--fail-on",
         choices=list(SEVERITIES),
-        help="exit with code 2 if a problem of this severity or worse is open",
+        help="exit with code 2 if a problem of this severity or worse is open, or a web check is not ok",
+    )
+    status_p.add_argument(
+        "--wait",
+        type=float,
+        default=0,
+        metavar="SECONDS",
+        help="first wait up to SECONDS for every web check to report a result",
     )
     status_p.set_defaults(func=cmd_status)
 

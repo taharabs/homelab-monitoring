@@ -272,9 +272,64 @@ def test_cli_status_can_fail_on_a_problem(cli_fake, capsys):
     (trigger,) = cli_fake.triggers.values()
     trigger.update(value=1, lastchange="1763049600", hosts=[{"host": "shop-web"}])
 
+    cli_fake.item_values["shop-web", "web.test.fail[Shop home page]"] = "0"
+
     assert main(["status", "-f", file, "--fail-on", "high"]) == 2
     assert "Shop home page is down" in capsys.readouterr().out
     assert main(["status", "-f", file, "--fail-on", "disaster"]) == 0
+
+
+def test_status_reports_each_web_check(cli_fake, capsys):
+    file = str(ROOT / "projects.yml")
+    assert main(["apply", "-f", file]) == 0
+    capsys.readouterr()
+    values = cli_fake.item_values
+    for host, check in [
+        ("depot-change-monitor", "API health"),
+        ("depot-change-monitor", "Agent online"),
+        ("depot-change-monitor", "Dashboard"),
+        ("task-manager", "Home page"),
+        ("wach-ntayab", "Home page"),
+        ("wach-ntayab", "Service worker"),
+        ("portfolio", "Home page"),
+    ]:
+        values[host, f"web.test.fail[{check}]"] = "0"
+
+    # One check has not run yet: not a pass when a threshold is set.
+    assert main(["status", "-f", file, "--fail-on", "high"]) == 2
+    out = capsys.readouterr().out
+    assert "Web checks" in out and "no data yet" in out and "U-Net write-up" in out
+
+    values["portfolio", "web.test.fail[U-Net write-up]"] = "0"
+    assert main(["status", "-f", file, "--fail-on", "high"]) == 0
+    assert "no data yet" not in capsys.readouterr().out
+
+    values["task-manager", "web.test.fail[Home page]"] = "1"
+    values["task-manager", "web.test.error[Home page]"] = 'required pattern "Task Manager" was not found'
+    assert main(["status", "-f", file]) == 0  # without --fail-on it only reports
+    assert "failing" in capsys.readouterr().out
+    assert main(["status", "-f", file, "--fail-on", "high"]) == 2
+
+
+def test_status_can_wait_for_first_results(cli_fake, capsys, monkeypatch):
+    file = str(ROOT / "monitoring.yml")
+    main(["apply", "-f", file])
+    naps = []
+
+    def fake_sleep(seconds):  # the check reports while zbxctl waits
+        naps.append(seconds)
+        cli_fake.item_values["shop-web", "web.test.fail[Shop home page]"] = "0"
+
+    monkeypatch.setattr("zbxctl.cli.time.sleep", fake_sleep)
+    assert main(["status", "-f", file, "--wait", "60", "--fail-on", "high"]) == 0
+    assert naps and "ok" in capsys.readouterr().out
+
+
+def test_projects_file_is_valid():
+    config = load_config(ROOT / "projects.yml")
+    checks = [c for h in config.hosts for c in h.web_checks]
+    assert len(checks) == 8
+    assert all(c.url.startswith("https://") for c in checks)
 
 
 def test_cli_reports_config_errors(tmp_path, capsys):
