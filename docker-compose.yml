@@ -1,0 +1,57 @@
+# Zabbix 7.0 LTS lab: server, web interface, PostgreSQL, one Linux agent and a demo website.
+#
+#   docker compose up -d          then open http://localhost:8080  (Admin / zabbix)
+#   pip install -e . && zbxctl wait && zbxctl apply
+#
+# Passwords below are throwaway lab defaults; override them in a .env file.
+
+x-db: &db
+  POSTGRES_USER: zabbix
+  POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zabbix-lab}
+  POSTGRES_DB: zabbix
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment: *db
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zabbix -d zabbix"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  zabbix-server:
+    image: zabbix/zabbix-server-pgsql:alpine-7.0-latest
+    environment:
+      <<: *db
+      DB_SERVER_HOST: postgres
+      ZBX_CACHEUPDATEFREQUENCY: "10"   # pick up new hosts within 10 s (lab setting)
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  zabbix-web:
+    image: zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest
+    environment:
+      <<: *db
+      DB_SERVER_HOST: postgres
+      ZBX_SERVER_HOST: zabbix-server
+      PHP_TZ: ${TZ:-Africa/Algiers}
+    ports: ["8080:8080"]
+    depends_on: [zabbix-server]
+
+  zabbix-agent:
+    image: zabbix/zabbix-agent2:alpine-7.0-latest
+    hostname: zabbix-agent
+    environment:
+      ZBX_HOSTNAME: zabbix-agent
+      ZBX_SERVER_HOST: zabbix-server
+    depends_on: [zabbix-server]
+
+  shop-web:
+    image: nginx:1.27-alpine
+    volumes: ["./demo/shop:/usr/share/nginx/html:ro"]
+
+volumes:
+  pgdata:
