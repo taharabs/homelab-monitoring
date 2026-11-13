@@ -11,7 +11,9 @@ A complete Zabbix 7.0 LTS lab in one `docker compose up`, plus `zbxctl`, a small
 
 Every push runs a drill in CI: start the lab, apply the configuration, wait for real data from the agent, **stop the demo website, check that Zabbix raises the alert, restart it and check that the alert clears.**
 
-<!-- SCREENSHOT -->
+<img src="docs/zabbix-problem.png" alt="Zabbix Problems page: High problem 'Shop home page is down' on the Demo shop website, opened by the CI drill">
+
+<sub>Captured by CI during the drill: the website is down, Zabbix raised the High problem 25 seconds later, and it resolved 20 seconds after the site came back.</sub>
 
 ## What is in the lab
 
@@ -61,6 +63,15 @@ Open <http://localhost:8080> (user `Admin`, password `zabbix`; change it in a re
 docker compose stop shop-web         # about 30 seconds later: "Shop home page is down" (High)
 docker compose start shop-web        # the problem resolves
 ```
+
+<details>
+<summary>More screenshots from the same run</summary>
+
+<img src="docs/zabbix-web-check.png" alt="Web monitoring page: the Shop home page check failing with 'Could not resolve host: shop-web'">
+
+<img src="docs/zabbix-hosts.png" alt="Hosts page: Demo shop website with its web check, Zabbix server available through zabbix-agent:10050">
+
+</details>
 
 ## The monitoring file
 
