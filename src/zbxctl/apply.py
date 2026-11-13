@@ -3,7 +3,7 @@
 The apply is additive and safe to repeat:
 
 * missing host groups, hosts, web checks and triggers are created;
-* missing groups and templates are added to existing hosts;
+* missing groups and templates are added to existing hosts, and their agent address is corrected;
 * web checks and triggers that drifted from the file are updated;
 * nothing is ever deleted, so objects created by hand in the web interface are left alone.
 
@@ -109,6 +109,7 @@ class Applier:
                 "filter": {"host": [h.host for h in self.config.hosts]},
                 "selectHostGroups": ["name"],
                 "selectParentTemplates": ["host"],
+                "selectInterfaces": ["interfaceid", "type", "main", "useip", "ip", "dns", "port"],
             },
         )
         existing = {h["host"]: h for h in found}
@@ -146,6 +147,7 @@ class Applier:
                     "host.massadd",
                     {"hosts": [{"hostid": host_id}], "groups": [{"groupid": groups[g]} for g in add_groups]},
                 )
+            self._interface(host, host_id, current.get("interfaces", []))
             have_templates = {t["host"] for t in current.get("parentTemplates", [])}
             link = [t for t in host.templates if t not in have_templates]
             if link:
@@ -158,6 +160,29 @@ class Applier:
                     },
                 )
         return host_ids
+
+    def _interface(self, host: Host, host_id: str, interfaces: list[dict]) -> None:
+        wanted = _interfaces(host)
+        if not wanted:
+            return
+        want = wanted[0]
+        agent = next((i for i in interfaces if str(i.get("type")) == "1" and str(i.get("main")) == "1"), None)
+        address = f"{want['dns'] or want['ip']}:{want['port']}"
+        if agent is None:
+            self._do(
+                Action("add_interface", host.host, address),
+                "hostinterface.create",
+                {"hostid": host_id, **want},
+            )
+            return
+        fields = ("useip", "ip", "dns", "port")
+        if any(str(agent.get(f, "")) != str(want[f]) for f in fields):
+            old = f"{agent.get('dns') or agent.get('ip')}:{agent.get('port')}"
+            self._do(
+                Action("update_interface", host.host, f"{old} -> {address}"),
+                "hostinterface.update",
+                {"interfaceid": agent["interfaceid"], **{f: want[f] for f in fields}},
+            )
 
     # -- web checks and their triggers -------------------------------------------------
 

@@ -65,8 +65,16 @@ def test_closing_logs_out(api, fake):
 
 
 def test_item_last_value(api):
-    assert api.item_last_value("zabbix-agent", "agent.ping") == "1"
-    assert api.item_last_value("shop-web", "web.test.fail[Shop home page]") is None
+    assert api.item_last_value("Zabbix server", "agent.ping") == "1"
+    assert api.item_last_value("shop-web", "system.uptime") is None
+
+
+def test_web_scenario_items_are_requested_explicitly(api, fake):
+    # Zabbix leaves web scenario items out of item.get unless webitems is set.
+    fake.m_item_get = lambda params: (
+        [{"lastvalue": "0", "lastclock": "1763049600"}] if params.get("webitems") else []
+    )
+    assert api.item_last_value("shop-web", "web.test.fail[Shop home page]") == "0"
 
 
 # -- config -----------------------------------------------------------------------------
@@ -74,11 +82,11 @@ def test_item_last_value(api):
 
 def test_sample_file_is_valid():
     config = load_config(ROOT / "monitoring.yml")
-    assert [h.host for h in config.hosts] == ["zabbix-agent", "shop-web"]
+    assert [h.host for h in config.hosts] == ["Zabbix server", "shop-web"]
     check = config.hosts[1].web_checks[0]
     assert check.priority == 4
     assert check.trigger_expression("shop-web") == "last(/shop-web/web.test.fail[Shop home page])<>0"
-    assert config.templates == ["Linux by Zabbix agent"]
+    assert config.templates == ["Linux by Zabbix agent", "Zabbix server health"]
 
 
 @pytest.mark.parametrize(
@@ -109,19 +117,19 @@ def test_first_apply_creates_everything(api, fake):
 
     assert [a.kind for a in actions] == [
         "create_group",
-        "create_group",
-        "create_host",
+        "update_interface",
         "create_host",
         "create_web_check",
         "create_trigger",
     ]
-    agent = fake.hosts["zabbix-agent"]
-    assert agent["interfaces"] == [
-        {"type": 1, "main": 1, "useip": 0, "ip": "", "dns": "zabbix-agent", "port": "10050"}
-    ]
-    assert agent["templates"] == [fake.templates["Linux by Zabbix agent"]]
-    assert {"tag": "role", "value": "linux"} in agent["tags"]
-    assert fake.hosts["shop-web"]["interfaces"] == []
+    assert actions[1].detail == "127.0.0.1:10050 -> zabbix-agent:10050"
+    (interface,) = fake.hosts["Zabbix server"]["interfaces"]
+    assert (interface["useip"], interface["dns"], interface["ip"]) == (0, "zabbix-agent", "")
+
+    shop = fake.hosts["shop-web"]
+    assert shop["interfaces"] == []
+    assert shop["groups"] == [fake.groups["Homelab/Web services"]]
+    assert {"tag": "role", "value": "web"} in shop["tags"]
 
     (scenario,) = fake.httptests.values()
     assert scenario["delay"] == "30s"
@@ -130,6 +138,28 @@ def test_first_apply_creates_everything(api, fake):
     (trigger,) = fake.triggers.values()
     assert trigger["description"] == "Shop home page is down"
     assert trigger["priority"] == 4
+
+
+def test_new_host_gets_its_agent_interface(api, fake):
+    raw = sample()
+    raw["hosts"].append(
+        {
+            "host": "nas-01",
+            "groups": ["Zabbix servers"],
+            "templates": ["Linux by Zabbix agent"],
+            "interface": {"ip": "192.0.2.10"},
+        }
+    )
+    apply_config(api, parse_config(raw))
+    (interface,) = fake.hosts["nas-01"]["interfaces"]
+    assert (interface["useip"], interface["ip"], interface["port"]) == (1, "192.0.2.10", "10050")
+
+
+def test_missing_agent_interface_is_added(api, fake):
+    fake.hosts["Zabbix server"]["interfaces"] = []
+    actions = apply_config(api, parse_config(sample()))
+    assert ("add_interface", "zabbix-agent:10050") in [(a.kind, a.detail) for a in actions]
+    assert fake.hosts["Zabbix server"]["interfaces"][0]["dns"] == "zabbix-agent"
 
 
 def test_second_apply_changes_nothing(api, fake):
@@ -144,19 +174,22 @@ def test_second_apply_changes_nothing(api, fake):
 
 def test_dry_run_reports_but_does_not_write(api, fake):
     actions = apply_config(api, parse_config(sample()), dry_run=True)
-    assert len(actions) == 6
-    assert fake.hosts == {} and fake.httptests == {} and fake.triggers == {}
+    assert len(actions) == 5
+    assert set(fake.hosts) == {"Zabbix server"} and fake.httptests == {} and fake.triggers == {}
+    assert fake.hosts["Zabbix server"]["interfaces"][0]["ip"] == "127.0.0.1"
     assert all(c.endswith(".get") or c.startswith("user.") for c in fake.calls)
 
 
 def test_drift_is_corrected_without_deleting_anything(api, fake):
     apply_config(api, parse_config(sample()))
-    # Someone edits Zabbix by hand: renames the host, unlinks the template, adds an extra group.
-    agent = fake.hosts["zabbix-agent"]
-    agent["name"] = "renamed by hand"
-    agent["templates"] = []
+    # Someone edits Zabbix by hand: renames the host, unlinks a template, adds an extra group,
+    # and points the agent somewhere else.
+    server = fake.hosts["Zabbix server"]
+    server["name"] = "renamed by hand"
+    server["templates"] = [fake.templates["Zabbix server health"]]
     fake.groups["Manual group"] = "99"
-    agent["groups"].append("99")
+    server["groups"].append("99")
+    server["interfaces"][0].update(dns="old-agent", port="10051")
 
     raw = sample()
     raw["hosts"][1]["web_checks"][0].update(url="http://shop-web/health", severity="disaster")
@@ -164,13 +197,15 @@ def test_drift_is_corrected_without_deleting_anything(api, fake):
 
     assert [a.kind for a in actions] == [
         "rename_host",
+        "update_interface",
         "link_templates",
         "update_web_check",
         "update_trigger",
     ]
-    assert agent["name"] == "Linux server (agent 2)"
-    assert agent["templates"] == [fake.templates["Linux by Zabbix agent"]]
-    assert "99" in agent["groups"]  # the manual group is kept
+    assert server["name"] == "Zabbix server"
+    assert fake.templates["Linux by Zabbix agent"] in server["templates"]
+    assert "99" in server["groups"]  # the manual group is kept
+    assert (server["interfaces"][0]["dns"], server["interfaces"][0]["port"]) == ("zabbix-agent", "10050")
     (scenario,) = fake.httptests.values()
     assert scenario["steps"][0]["url"] == "http://shop-web/health"
     (trigger,) = fake.triggers.values()
@@ -180,7 +215,7 @@ def test_drift_is_corrected_without_deleting_anything(api, fake):
 def test_new_group_is_added_to_an_existing_host(api, fake):
     apply_config(api, parse_config(sample()))
     raw = sample(host_groups=SAMPLE["host_groups"] + ["Homelab/Production"])
-    raw["hosts"][0]["groups"] = ["Homelab/Linux servers", "Homelab/Production"]
+    raw["hosts"][0]["groups"] = ["Zabbix servers", "Homelab/Production"]
 
     actions = apply_config(api, parse_config(raw))
     assert [(a.kind, a.detail) for a in actions] == [
@@ -194,7 +229,7 @@ def test_missing_template_stops_before_any_change(api, fake):
     raw["hosts"][0]["templates"] = ["Windows by Zabbix agent"]
     with pytest.raises(ConfigError, match="Windows by Zabbix agent"):
         apply_config(api, parse_config(raw))
-    assert fake.hosts == {} and "hostgroup.create" not in fake.calls
+    assert set(fake.hosts) == {"Zabbix server"} and "hostgroup.create" not in fake.calls
 
 
 # -- command line -----------------------------------------------------------------------
@@ -217,17 +252,17 @@ def cli_fake(fake, monkeypatch):
 def test_cli_apply_then_status(cli_fake, capsys):
     file = str(ROOT / "monitoring.yml")
     assert main(["apply", "-f", file, "--dry-run"]) == 0
-    assert "Would apply 6 change(s)" in capsys.readouterr().out
-    assert cli_fake.hosts == {}
+    assert "Would apply 5 change(s)" in capsys.readouterr().out
+    assert set(cli_fake.hosts) == {"Zabbix server"}
 
     assert main(["apply", "-f", file]) == 0
-    assert "Applied 6 change(s)" in capsys.readouterr().out
+    assert "Applied 5 change(s)" in capsys.readouterr().out
     assert main(["apply", "-f", file]) == 0
     assert "No changes" in capsys.readouterr().out
 
     assert main(["status", "-f", file]) == 0
     out = capsys.readouterr().out
-    assert "zabbix-agent" in out and "available" in out and "Problems (0)" in out
+    assert "Zabbix server" in out and "available" in out and "Problems (0)" in out
     assert cli_fake.logged_out
 
 

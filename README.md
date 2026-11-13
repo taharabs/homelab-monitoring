@@ -21,7 +21,7 @@ flowchart LR
         PG[("PostgreSQL 16")]
         S["Zabbix server 7.0"]
         W["Zabbix web<br/>:8080"]
-        A["Zabbix agent 2<br/>Linux host"]
+        A["Zabbix agent 2<br/>for host 'Zabbix server'"]
         N["Demo shop<br/>nginx"]
         S <--> PG
         W <--> PG
@@ -37,7 +37,7 @@ flowchart LR
 | `postgres` | `postgres:16-alpine` | Zabbix database |
 | `zabbix-server` | `zabbix/zabbix-server-pgsql:alpine-7.0-latest` | Collects data, evaluates triggers |
 | `zabbix-web` | `zabbix/zabbix-web-nginx-pgsql:alpine-7.0-latest` | Web interface and API on port 8080 |
-| `zabbix-agent` | `zabbix/zabbix-agent2:alpine-7.0-latest` | A Linux machine to monitor (CPU, memory, disks, network) |
+| `zabbix-agent` | `zabbix/zabbix-agent2:alpine-7.0-latest` | Agent 2 for the built-in "Zabbix server" host: CPU, memory, disks, network |
 | `shop-web` | `nginx:1.27-alpine` | A website to check from the outside |
 
 ## Quick start
@@ -66,16 +66,15 @@ docker compose start shop-web        # the problem resolves
 
 ```yaml
 host_groups:
-  - Homelab/Linux servers
+  - Zabbix servers
   - Homelab/Web services
 
 hosts:
-  - host: zabbix-agent
-    name: Linux server (agent 2)
-    groups: [Homelab/Linux servers]
-    templates: [Linux by Zabbix agent]
+  - host: Zabbix server                 # the built-in host: point its agent at the agent container
+    name: Zabbix server
+    groups: [Zabbix servers]
+    templates: [Linux by Zabbix agent, Zabbix server health]
     interface: { dns: zabbix-agent, port: 10050 }
-    tags: { env: homelab, role: linux }
 
   - host: shop-web
     name: Demo shop website
@@ -94,17 +93,16 @@ Each web check becomes a Zabbix web scenario and a trigger named `<check name> i
 ## How `zbxctl apply` behaves
 
 - **Idempotent.** A second run right after the first makes no change and says so.
-- **Additive and safe.** It creates what is missing, adds missing groups and templates to existing hosts, and updates web checks and triggers that drifted from the file. It never deletes, so anything created by hand in the web interface stays.
+- **Additive and safe.** It creates what is missing, adds missing groups and templates to existing hosts, corrects their agent address, and updates web checks and triggers that drifted from the file. It never deletes, so anything created by hand in the web interface stays.
 - **Checked before writing.** The file is validated first (unknown groups, bad intervals, unsafe names), and a template that does not exist in Zabbix stops the run before any change.
 - **Dry run.** `--dry-run` lists the changes and makes none: useful in a pull request.
 - **No secrets in the file.** Connection settings come from `ZABBIX_URL`, and either `ZABBIX_TOKEN` (an API token, recommended) or `ZABBIX_USER` / `ZABBIX_PASSWORD`.
 
 ```text
 $ zbxctl apply
-Applied 6 change(s):
-   create_group       Homelab/Linux servers
+Applied 5 change(s):
    create_group       Homelab/Web services
-   create_host        zabbix-agent  (Linux by Zabbix agent)
+   update_interface   Zabbix server  (127.0.0.1:10050 -> zabbix-agent:10050)
    create_host        shop-web  (no template)
    create_web_check   shop-web: Shop home page  (http://shop-web/ every 30s)
    create_trigger     shop-web: Shop home page  (Shop home page is down, high)
@@ -119,8 +117,8 @@ No changes: Zabbix already matches monitoring.yml
 
 | Suite | What it proves | Where |
 | --- | --- | --- |
-| Unit (24 tests) | Config validation, create / no-op / drift correction / dry run, API errors, CLI, against an in-memory imitation of the Zabbix 7.0 API | `tests/test_zbxctl.py`, about a second |
-| End to end | On the real Compose lab: apply twice (second run changes nothing), agent data arrives, website outage raises then clears the High problem | `tests/test_integration.py`, in CI on every push |
+| Unit (27 tests) | Config validation, create / no-op / drift correction / dry run, agent address fixes, API errors, CLI, against an in-memory imitation of the Zabbix 7.0 API | `tests/test_zbxctl.py`, about a second |
+| End to end | On the real Compose lab: apply twice (second run changes nothing), agent data arrives and the "agent not available" alert clears, website outage raises then clears the High problem | `tests/test_integration.py`, in CI on every push |
 
 ```bash
 python -m pytest                                   # unit tests

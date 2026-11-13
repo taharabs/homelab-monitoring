@@ -107,6 +107,7 @@ class ZabbixAPI:
                 "output": ["lastvalue", "lastclock"],
                 "host": host,
                 "filter": {"key_": key},
+                "webitems": True,  # without this, web scenario items are left out
             },
         )
         if not items or items[0]["lastclock"] in ("0", 0):

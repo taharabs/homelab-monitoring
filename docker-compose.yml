@@ -45,7 +45,7 @@ services:
     image: zabbix/zabbix-agent2:alpine-7.0-latest
     hostname: zabbix-agent
     environment:
-      ZBX_HOSTNAME: zabbix-agent
+      ZBX_HOSTNAME: Zabbix server   # the agent reports for the built-in "Zabbix server" host
       ZBX_SERVER_HOST: zabbix-server
     depends_on: [zabbix-server]
 

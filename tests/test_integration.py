@@ -93,22 +93,41 @@ def test_apply_is_idempotent_on_a_real_server(api):
     config = load_config(ROOT / "monitoring.yml")
     first = apply_config(api, config)
     print("\n".join(f"  {a}" for a in first))
-    assert {a.kind for a in first} >= {"create_host", "create_web_check", "create_trigger"}
+    assert {a.kind for a in first} >= {
+        "update_interface",
+        "create_host",
+        "create_web_check",
+        "create_trigger",
+    }
     assert apply_config(api, config) == []
 
 
 def test_agent_sends_data(api):
-    wait_for("agent.ping = 1", lambda: api.item_last_value("zabbix-agent", "agent.ping") == "1", timeout=300)
+    wait_for("agent.ping = 1", lambda: api.item_last_value("Zabbix server", "agent.ping") == "1", timeout=300)
     wait_for(
         "CPU utilization collected",
-        lambda: api.item_last_value("zabbix-agent", "system.cpu.util") is not None,
+        lambda: api.item_last_value("Zabbix server", "system.cpu.util") is not None,
+        timeout=300,
+    )
+    wait_for(
+        "agent problem cleared",
+        lambda: not any("not available" in p for p in open_problems(api)),
         timeout=300,
     )
 
 
 def test_website_outage_raises_and_clears_a_problem(api):
     key = "web.test.fail[Shop home page]"
-    wait_for("web check passes", lambda: api.item_last_value("shop-web", key) == "0", timeout=240)
+    values: list = []
+
+    def passing() -> bool:
+        values.append(api.item_last_value("shop-web", key))
+        return values[-1] == "0"
+
+    try:
+        wait_for("web check passes", passing, timeout=240)
+    except AssertionError:
+        raise AssertionError(f"last values of {key}: {values[-5:]}") from None
     assert TRIGGER not in open_problems(api)
 
     compose("stop", "shop-web")

@@ -20,6 +20,26 @@ class FakeZabbix:
         self.templates = {name: str(next(self._ids)) for name in templates}
         self.groups: dict[str, str] = {"Zabbix servers": str(next(self._ids))}
         self.hosts: dict[str, dict] = {}
+        # Like a fresh Zabbix install: a "Zabbix server" host whose agent is expected on 127.0.0.1.
+        self.hosts["Zabbix server"] = {
+            "hostid": str(next(self._ids)),
+            "host": "Zabbix server",
+            "name": "Zabbix server",
+            "groups": [self.groups["Zabbix servers"]],
+            "templates": [self.templates["Linux by Zabbix agent"], self.templates["Zabbix server health"]],
+            "interfaces": [
+                {
+                    "interfaceid": str(next(self._ids)),
+                    "type": 1,
+                    "main": 1,
+                    "useip": 1,
+                    "ip": "127.0.0.1",
+                    "dns": "",
+                    "port": "10050",
+                }
+            ],
+            "tags": [],
+        }
         self.httptests: dict[str, dict] = {}
         self.triggers: dict[str, dict] = {}
         self.calls: list[str] = []
@@ -109,7 +129,9 @@ class FakeZabbix:
             if "selectParentTemplates" in params:
                 item["parentTemplates"] = [{"host": self._template_name(t)} for t in host["templates"]]
             if "selectInterfaces" in params:
-                item["interfaces"] = [{"available": "1", **i} for i in host["interfaces"]]
+                item["interfaces"] = [
+                    {"available": "1", **{k: str(v) for k, v in i.items()}} for i in host["interfaces"]
+                ]
             result.append(item)
         return result
 
@@ -128,7 +150,7 @@ class FakeZabbix:
             "name": params.get("name", params["host"]),
             "groups": [g["groupid"] for g in params["groups"]],
             "templates": [t["templateid"] for t in params.get("templates", [])],
-            "interfaces": params.get("interfaces", []),
+            "interfaces": [{"interfaceid": self._new_id(), **i} for i in params.get("interfaces", [])],
             "tags": params.get("tags", []),
         }
         return {"hostids": [host_id]}
@@ -151,6 +173,20 @@ class FakeZabbix:
                 if template["templateid"] not in host["templates"]:
                     host["templates"].append(template["templateid"])
         return {"hostids": [h["hostid"] for h in params["hosts"]]}
+
+    def m_hostinterface_update(self, params):
+        for host in self.hosts.values():
+            for interface in host["interfaces"]:
+                if interface["interfaceid"] == params["interfaceid"]:
+                    interface.update({k: v for k, v in params.items() if k != "interfaceid"})
+                    return {"interfaceids": [params["interfaceid"]]}
+        raise ValueError("No permissions to referred object or it does not exist!")
+
+    def m_hostinterface_create(self, params):
+        host = self._host_by_id(params["hostid"])
+        interface = {"interfaceid": self._new_id(), **{k: v for k, v in params.items() if k != "hostid"}}
+        host["interfaces"].append(interface)
+        return {"interfaceids": [interface["interfaceid"]]}
 
     # -- web scenarios and triggers --------------------------------------------------
 
@@ -209,6 +245,9 @@ class FakeZabbix:
         return {"triggerids": [params["triggerid"]]}
 
     def m_item_get(self, params):
-        if params["host"] == "zabbix-agent" and params["filter"]["key_"] == "agent.ping":
+        key = params["filter"]["key_"]
+        if key.startswith("web.test.") and not params.get("webitems"):
+            return []  # like Zabbix: web scenario items are only returned with webitems=true
+        if params["host"] == "Zabbix server" and key == "agent.ping":
             return [{"lastvalue": "1", "lastclock": "1763049600"}]
         return [{"lastvalue": "0", "lastclock": "0"}]
